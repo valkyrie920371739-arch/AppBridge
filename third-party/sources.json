@@ -1,0 +1,61 @@
+{
+  "checkedAt": "2026-10-30T00:00:00+08:00",
+  "purpose": "Local build provenance; not a declaration of complete redistribution compliance",
+  "wine": {
+    "name": "Wine Staging",
+    "version": "11.20",
+    "license": "LGPL-2.1-or-later plus separately licensed bundled components",
+    "release": "https://github.com/Gcenx/macOS_Wine_builds/releases/tag/11.20",
+    "asset": {
+      "url": "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.20/wine-staging-11.20-osx64.tar.xz",
+      "apiUrl": "https://api.github.com/repos/Gcenx/macOS_Wine_builds/releases/assets/687305161",
+      "apiAccept": "application/octet-stream",
+      "size": 227975304,
+      "sha256": "4df858c5e72920deaf123cbc29fa2b9e64c23bcf2dea59e0a7047b879b9cd952"
+    },
+    "source": {
+      "tag": "wine-11.20",
+      "commit": "7298a818b79446bae153b8d5aa27235ab3703bf9",
+      "url": "https://github.com/wine-mirror/wine/archive/refs/tags/wine-11.20.tar.gz",
+      "sha256FromPortfile": "98b21b4ebdf7d9e2baa4a3508514285cf449f455603f82d3364b014c0e79b793",
+      "stagingPatches": "https://github.com/wine-staging/wine-staging/archive/refs/tags/v11.20.tar.gz",
+      "stagingPatchesSha256FromPortfile": "e383e43450c55fe476b7b33e83121af9295741bc43551204604cecd603a41014",
+      "buildRecipe": "https://github.com/Gcenx/macports-wine/blob/850f5330ed500a87bdcf8441763ad6cf4109aedc/emulators/wine-devel/Portfile",
+      "additionalPatch": "https://github.com/Gcenx/macports-wine/blob/850f5330ed500a87bdcf8441763ad6cf4109aedc/emulators/wine-devel/files/0001-win32u-Enable-host-Vulkan-portability-enumeration.diff"
+    },
+    "bundleLayout": "Wine Staging.app/Contents/Resources/wine",
+    "cliRelativePath": "bin/wine",
+    "includedByReleaseNotes": {
+      "wineGecko": "2.47.4",
+      "wineMono": "11.3.0",
+      "GStreamer": "1.28.1"
+    },
+    "dependencySourceAudit": "incomplete"
+  },
+  "dxmt": {
+    "version": "v0.80",
+    "license": "MIT",
+    "release": "https://github.com/3Shain/dxmt/releases/tag/v0.80",
+    "asset": {
+      "url": "https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz",
+      "apiUrl": "https://api.github.com/repos/3Shain/dxmt/releases/assets/403345414",
+      "apiAccept": "application/octet-stream",
+      "size": 18681669,
+      "sha256": "8f260e36b5739e68f3bad613381441385c4dc7b85b78ba8de653d5a6a264529d"
+    },
+    "source": {
+      "commit": "589adb780354b461645b29999cefaf533594ee99",
+      "url": "https://github.com/3Shain/dxmt/archive/refs/tags/v0.80.tar.gz",
+      "license": "https://raw.githubusercontent.com/3Shain/dxmt/589adb780354b461645b29999cefaf533594ee99/LICENSE",
+      "buildInstructions": "https://github.com/3Shain/dxmt/blob/589adb780354b461645b29999cefaf533594ee99/docs/DEVELOPMENT.md",
+      "llvmLicenseReference": "https://github.com/llvm/llvm-project/blob/llvmorg-15.0.7/llvm/LICENSE.TXT",
+      "llvmExactPatchVersionVerified": false
+    },
+    "bundleLayout": "v0.80/{x86_64-unix,x86_64-windows,i386-windows}",
+    "builtinDllOverrides": "Do not configure DXMT builtin d3d11/dxgi/d3d10core as native DLLs"
+  },
+  "apple": {
+    "Rosetta": "Operating system component supplied by Apple; not bundled by AppBridge",
+    "reference": "https://support.apple.com/102527"
+  }
+}

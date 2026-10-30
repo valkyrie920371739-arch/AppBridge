@@ -1,0 +1,2 @@
+Wine Staging.app/Contents/Resources/wine/bin/wineserver
+Wine Staging.app/Contents/Resources/wine/bin/wine

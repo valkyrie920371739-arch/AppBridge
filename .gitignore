@@ -1,0 +1,40 @@
+# Publish source and notices only. Runtime bundles, game files and personal data
+# remain outside this allowlist, including files added later at the project root.
+*
+!/.gitignore
+!/README.md
+!/package.json
+!/package-lock.json
+!/src/
+!/src/**
+!/tests/
+!/tests/**
+!/native/
+!/native/appbridge-display.m
+!/native/appbridge-processes.c
+!/scripts/
+!/scripts/build.cjs
+!/scripts/create-app-icon.swift
+!/scripts/download-asset.py
+!/scripts/install.command
+!/scripts/launch-cloud.command
+!/scripts/open-workspace.command
+!/scripts/prepare-runtime.cjs
+!/scripts/publish-local.cjs
+!/assets/
+!/assets/appbridge-icon.png
+!/assets/appbridge.icns
+!/third-party/
+!/third-party/**
+
+# Ignore editor metadata and generated files even within an allowed directory.
+**/.DS_Store
+**/._*
+**/*.log
+**/*.zip
+**/*.tar.gz
+**/*.tar.xz
+**/*.exe
+**/*.dll
+**/node_modules/
+**/*.app/

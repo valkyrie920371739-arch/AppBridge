@@ -1,0 +1,9 @@
+{
+  "name": "appbridge",
+  "productName": "AppBridge",
+  "version": "0.3.1",
+  "description": "Local application library and compatibility launcher",
+  "main": "main.cjs",
+  "private": true,
+  "license": "UNLICENSED"
+}
