@@ -97,6 +97,24 @@
     <div class="display-footer"><button type="button" class="button secondary close-dialog">取消</button><button type="submit" class="button primary" id="display-save"><span data-icon="Check"></span>保存设置</button></div>
   </form>
 </dialog>
+<dialog id="compatibility-dialog" class="panel-dialog" aria-labelledby="compatibility-title" aria-describedby="compatibility-app-name">
+  <div class="dialog-header"><div><h2 id="compatibility-title">兼容设置</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭兼容设置"><span data-icon="X"></span></button></div>
+  <p class="dialog-intro display-app-name" id="compatibility-app-name"></p>
+  <p class="compatibility-detected" id="compatibility-detected"></p>
+  <form id="compatibility-form" class="display-form" aria-busy="false">
+    <p id="compatibility-locked" class="display-locked" role="status" hidden>应用正在启动、运行或整理文件。请完成后再修改兼容设置。</p>
+    <p id="compatibility-unavailable" class="display-locked" role="status" hidden>应用已从资料库移出。重新添加后即可修改兼容设置。</p>
+    <p id="compatibility-error" class="compatibility-error" role="alert" tabindex="-1" hidden></p>
+    <fieldset id="compatibility-fields" class="display-fields">
+      <legend class="sr-only">应用启动兼容选项</legend>
+      <label class="display-field" for="compatibility-engine"><span>程序引擎</span><select id="compatibility-engine" aria-describedby="compatibility-detected"><option value="auto">自动识别（推荐）</option><option value="unity">Unity</option><option value="unreal">Unreal Engine</option><option value="godot">Godot</option><option value="renpy">Ren’Py</option><option value="rpgmaker">RPG Maker</option><option value="tyrano">TyranoScript</option><option value="unknown">通用 Windows 程序</option></select></label>
+      <label class="display-field" for="compatibility-graphics"><span>图形模式</span><select id="compatibility-graphics" aria-describedby="compatibility-help"><option value="auto">自动（推荐）</option><option value="game">跟随程序</option></select></label>
+      <p id="compatibility-help" class="display-help"></p>
+    </fieldset>
+    <p class="display-help compatibility-verification">本轮引擎适配待实际程序验证。识别到引擎后，仍需测试程序能否正常启动、显示和保存。</p>
+    <div class="display-footer"><button type="button" class="button secondary close-dialog">取消</button><button type="submit" class="button primary" id="compatibility-save"><span data-icon="Check"></span><span id="compatibility-save-label">保存设置</span></button></div>
+  </form>
+</dialog>
 <dialog id="data-dialog" class="panel-dialog data-dialog" aria-labelledby="data-title" aria-describedby="data-app-name">
   <div class="dialog-header"><div><h2 id="data-title">数据与存档</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭数据与存档"><span data-icon="X"></span></button></div>
   <p id="data-app-name" class="dialog-intro data-app-name"></p>
@@ -117,5 +135,5 @@
   <div class="dialog-footer data-dialog-footer"><button type="button" class="button secondary close-dialog">完成</button></div>
 </dialog>
 <dialog id="details-dialog" class="panel-dialog" aria-labelledby="details-title"><div id="details-content"></div></dialog>
-<script src="icons.js"></script><script src="app-search.js"></script><script src="data-panel.js"></script><script src="renderer.js"></script>
+<script src="icons.js"></script><script src="app-search.js"></script><script src="data-panel.js"></script><script src="compatibility-panel.js"></script><script src="renderer.js"></script>
 </body></html>

@@ -30,10 +30,11 @@ async function harness(t, options = {}) {
     id: 'example', kind: 'windows', title: 'Example application',
     architecture: 'x64', exePath: options.executableInsideData ? path.join(saveDirectory, 'program', 'Example.exe') : path.join(profile, options.executableName || 'Example.exe'),
     saveDirectory, prefixPath: path.join(saveDirectory, 'prefix'),
-    importedAt: new Date(0).toISOString(), lastPlayedAt: null,
+    importedAt: new Date(0).toISOString(), lastPlayedAt: null, ...options.game,
   };
   fs.mkdirSync(path.dirname(game.exePath), { recursive: true });
   fs.writeFileSync(game.exePath, 'fixture executable: launcher is mocked');
+  options.beforeLoad?.({ profile, game });
   const originalSettings = {
     wineRuntimePath: path.join(profile, 'custom Wine', 'wine'),
     wineVersion: 'wine-11.0', runtimeSource: options.runtimeSource || '手动选择',
@@ -72,6 +73,7 @@ async function harness(t, options = {}) {
     BrowserWindow: FakeWindow,
     ipcMain: { on: () => {}, handle: (channel, callback) => { handlers.set(channel, callback); } },
     dialog: {
+      showSaveDialog: async (...args) => behavior.showSaveDialog ? behavior.showSaveDialog(...args) : { canceled: true },
       showOpenDialog: async (...args) => {
         calls.openDialog.push(args);
         return behavior.showOpenDialog ? behavior.showOpenDialog(...args) : { canceled: true, filePaths: [] };
@@ -110,6 +112,8 @@ async function harness(t, options = {}) {
     if (name === './workspace.cjs') return require('../src/workspace.cjs');
     if (name === './managed-import.cjs') return require('../src/managed-import.cjs');
     if (name === './game-profiles.cjs') return require('../src/game-profiles.cjs');
+    if (name === './engine-profiles.cjs') return require('../src/engine-profiles.cjs');
+    if (name === './engine-launch.cjs') return require('../src/engine-launch.cjs');
     if (name === './display-environment.cjs') return { prepareEmulatedDisplay: async (...args) => {
       calls.display.push(args);
       return behavior.prepareEmulatedDisplay ? behavior.prepareEmulatedDisplay(...args) : { configured: true, restarted: true };
@@ -326,6 +330,9 @@ test('Unity display modes pass literal argument arrays and request borderless fu
     executableName: 'Game $literal & `value`.exe', saveFolder: 'data $literal & `value`', runtimeSource: 'bundled',
   });
   fs.writeFileSync(path.join(path.dirname(h.game.exePath), 'UnityPlayer.dll'), 'Unity fixture');
+  fs.mkdirSync(path.join(h.game.prefixPath, 'dosdevices'), { recursive: true });
+  fs.symlinkSync('/', path.join(h.game.prefixPath, 'dosdevices', 'z:'));
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'auto', graphics: 'd3d11' })).ok, true);
   const helper = path.join(h.profile, 'resources', 'runtime', 'display-helper.dylib');
   fs.mkdirSync(path.dirname(helper), { recursive: true });
   fs.writeFileSync(helper, 'native helper fixture');
@@ -334,7 +341,7 @@ test('Unity display modes pass literal argument arrays and request borderless fu
     assert.equal((await h.invoke('player:display', h.game.id, display)).ok, true);
     assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
     const launch = h.calls.launch.at(-1)[0];
-    const expected = ['-force-d3d11', '-logFile', path.join(h.game.saveDirectory, 'unity-player.log')];
+    const expected = ['-force-d3d11', '-logFile', require('../src/engine-launch.cjs').winePath(path.join(h.game.saveDirectory, 'unity-player.log'))];
     if (mode !== 'app') expected.push('-screen-fullscreen', mode === 'fullscreen' ? '1' : '0', '-screen-width', '1600', '-screen-height', '900');
     if (mode === 'fullscreen') expected.push('-window-mode', 'borderless');
     assert.ok(Array.isArray(launch.launchArguments));
@@ -347,6 +354,184 @@ test('Unity display modes pass literal argument arrays and request borderless fu
     launch.onExit({ ok: true, exitCode: 0, signal: null, error: null });
   }
   assert.equal(h.calls.launch.length, 3);
+});
+
+function engineLogMapping(h, destination = '/') {
+  const directory = path.join(h.game.prefixPath, 'dosdevices');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.symlinkSync(destination, path.join(directory, 'z:'));
+}
+
+test('new Unity imports keep graphics defaults and record an unverified launch plan and exit inside app data', async (t) => {
+  const h = await harness(t);
+  fs.writeFileSync(path.join(path.dirname(h.game.exePath), 'UnityPlayer.dll'), 'Unity fixture');
+  engineLogMapping(h);
+  assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
+  const invocation = h.calls.launch.at(-1)[0];
+  assert.equal(invocation.launchArguments.includes('-force-d3d11'), false);
+  const reportFile = path.join(h.game.saveDirectory, 'launch-plan.json');
+  const report = JSON.parse(fs.readFileSync(reportFile));
+  assert.equal(report.engine.id, 'unity');
+  assert.equal(report.detectedEngine.confidence, 'low');
+  assert.equal(report.verification, 'awaiting-application-test');
+  assert.ok(report.logFiles.every((file) => path.dirname(file.path) === h.game.saveDirectory));
+  invocation.onOutput({ stream: 'stderr', text: 'fixture engine output' });
+  invocation.onExit({ ok: false, exitCode: 17, signal: null, error: null });
+  const finished = JSON.parse(fs.readFileSync(reportFile));
+  assert.equal(finished.exit.exitCode, 17);
+  assert.ok(finished.finishedAt);
+  assert.match(fs.readFileSync(path.join(h.game.saveDirectory, 'runtime.log'), 'utf8'), /fixture engine output/);
+  assert.equal((await h.state()).games[0].running, false);
+});
+
+test('legacy Unity DX11 choices survive migration without changing new application defaults', async (t) => {
+  const h = await harness(t, { game: { engine: 'Unity · Direct3D 11' }, beforeLoad: ({ game }) => fs.writeFileSync(path.join(path.dirname(game.exePath), 'UnityPlayer.dll'), 'Unity fixture') });
+  assert.deepEqual((await h.state()).games[0].compatibility, { engine: 'auto', graphics: 'd3d11' });
+  fs.writeFileSync(path.join(path.dirname(h.game.exePath), 'UnityPlayer.dll'), 'Unity fixture');
+  engineLogMapping(h);
+  assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
+  assert.ok(h.calls.launch.at(-1)[0].launchArguments.includes('-force-d3d11'));
+  h.calls.launch.at(-1)[0].onExit({ ok: true, exitCode: 0 });
+});
+
+test('compatibility settings reject invalid combinations and unknown Godot versions without changing saved choices', async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'unity', graphics: 'd3d11' })).ok, true);
+  const before = fs.readFileSync(path.join(h.profile, 'library.json'), 'utf8');
+  for (const value of [null, [], {}, { engine: '../unreal', graphics: 'auto' }, { engine: 'auto', graphics: 'd3d11' }, { engine: 'godot', graphics: 'opengl' }]) {
+    assert.equal((await h.invoke('player:compatibility', h.game.id, value)).ok, false);
+    assert.equal(fs.readFileSync(path.join(h.profile, 'library.json'), 'utf8'), before);
+  }
+  const state = await h.state();
+  assert.equal(state.games[0].compatibilityInfo.engineName, 'Unity');
+  assert.match(state.games[0].compatibilityInfo.note, /待实际程序验证/);
+});
+
+test('manual Unreal preset affects only the selected app and records literal display and log arguments', async (t) => {
+  const h = await harness(t);
+  engineLogMapping(h);
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'unreal', graphics: 'd3d11' })).ok, true);
+  assert.equal((await h.invoke('player:display', h.game.id, { mode: 'windowed', width: 1366, height: 768, hideDock: false })).ok, true);
+  assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
+  const invocation = h.calls.launch.at(-1)[0];
+  assert.deepEqual(Array.from(invocation.launchArguments), ['-dx11', `-ABSLOG=${require('../src/engine-launch.cjs').winePath(path.join(h.game.saveDirectory, 'unreal-player.log'))}`, '-windowed', '-ResX=1366', '-ResY=768']);
+  assert.equal(invocation.exePath, h.game.exePath);
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'auto', graphics: 'auto' })).ok, false);
+  invocation.onExit({ ok: true, exitCode: 0 });
+  const output = path.join(h.profile, 'export.json');
+  h.behavior.showSaveDialog = async () => ({ canceled: false, filePath: output });
+  assert.equal((await h.invoke('player:export-log')).ok, true);
+  const exported = JSON.parse(fs.readFileSync(output));
+  assert.equal(JSON.parse(exported.apps[0].launchPlan).engine.id, 'unreal');
+  assert.equal(exported.apps[0].unrealLog, null, 'Shipping builds may omit an engine log');
+});
+
+test('redirected engine log mapping fails before game launch and remains retryable', async (t) => {
+  const h = await harness(t);
+  fs.writeFileSync(path.join(path.dirname(h.game.exePath), 'UnityPlayer.dll'), 'Unity fixture');
+  engineLogMapping(h, h.profile);
+  const result = await h.invoke('player:launch', h.game.id);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Z:/);
+  assert.equal(h.calls.launch.length, 0);
+  assert.equal((await h.state()).games[0].launching, false);
+  fs.unlinkSync(path.join(h.game.prefixPath, 'dosdevices', 'z:'));
+  fs.symlinkSync('/', path.join(h.game.prefixPath, 'dosdevices', 'z:'));
+  assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
+  h.calls.launch.at(-1)[0].onExit({ ok: true, exitCode: 0 });
+});
+
+test('compatibility save rechecks a launch that starts while process inspection is pending', async (t) => {
+  const h = await harness(t);
+  fs.mkdirSync(h.game.prefixPath, { recursive: true });
+  const inspection = deferred();
+  const probe = deferred();
+  let scans = 0;
+  h.behavior.scanRuntimeProcesses = () => ++scans === 1 ? inspection.promise : [];
+  h.behavior.probeRuntime = () => probe.promise;
+  const changing = h.invoke('player:compatibility', h.game.id, { engine: 'unreal', graphics: 'd3d11' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const starting = h.invoke('player:launch', h.game.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  inspection.resolve([]);
+  assert.equal((await changing).ok, false);
+  assert.equal((await h.state()).games[0].compatibility, undefined);
+  probe.resolve(goodProbe());
+  assert.equal((await starting).ok, true);
+  h.calls.launch.at(-1)[0].onExit({ ok: true, exitCode: 0 });
+});
+
+test('automatic renderer choices recover when new engine evidence replaces the previous Unity layout', async (t) => {
+  const h = await harness(t);
+  const dll = path.join(path.dirname(h.game.exePath), 'UnityPlayer.dll');
+  fs.writeFileSync(dll, 'Unity fixture');
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'auto', graphics: 'd3d11' })).ok, true);
+  fs.unlinkSync(dll);
+  const pck = Buffer.alloc(20);
+  pck.write('GDPC'); pck.writeUInt32LE(2, 4); pck.writeUInt32LE(4, 8); pck.writeUInt32LE(2, 12);
+  fs.writeFileSync(h.game.exePath.replace(/\.exe$/i, '.pck'), pck);
+  assert.equal((await h.invoke('player:launch', h.game.id)).ok, true);
+  const game = (await h.state()).games[0];
+  assert.equal(game.engineProfile.id, 'godot');
+  assert.deepEqual(game.compatibility, { engine: 'auto', graphics: 'auto' });
+  assert.match(game.compatibilityNotice, /已恢复自动适配/);
+  assert.deepEqual(Array.from(h.calls.launch.at(-1)[0].launchArguments), []);
+  h.calls.launch.at(-1)[0].onExit({ ok: true, exitCode: 0 });
+});
+
+test('invalid new entries do not leave half-updated titles, paths or engine profiles in memory or on disk', async (t) => {
+  const h = await harness(t);
+  const before = (await h.state()).games[0];
+  const target = path.join(h.profile, 'target.exe');
+  const link = path.join(h.profile, 'redirected.exe');
+  fs.writeFileSync(target, 'target fixture'); fs.symlinkSync(target, link);
+  h.behavior.showOpenDialog = async () => ({ canceled: false, filePaths: [link] });
+  const saved = fs.readFileSync(path.join(h.profile, 'library.json'), 'utf8');
+  assert.equal((await h.invoke('player:entry', h.game.id)).ok, false);
+  const after = (await h.state()).games[0];
+  assert.equal(after.exePath, before.exePath);
+  assert.equal(after.title, before.title);
+  assert.deepEqual(after.engineProfile, before.engineProfile);
+  assert.equal(fs.readFileSync(path.join(h.profile, 'library.json'), 'utf8'), saved);
+});
+
+test('entry selection rechecks activity after the file dialog and never edits a running application', async (t) => {
+  const h = await harness(t);
+  const selection = deferred(); const probe = deferred();
+  h.behavior.showOpenDialog = () => selection.promise;
+  h.behavior.probeRuntime = () => probe.promise;
+  const choosing = h.invoke('player:entry', h.game.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  const starting = h.invoke('player:launch', h.game.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  selection.resolve({ canceled: false, filePaths: [path.join(h.profile, 'different.exe')] });
+  assert.equal((await choosing).ok, false);
+  assert.equal((await h.state()).games[0].exePath, h.game.exePath);
+  probe.resolve(goodProbe()); assert.equal((await starting).ok, true);
+  h.calls.launch.at(-1)[0].onExit({ ok: true, exitCode: 0 });
+  h.behavior.scanRuntimeProcesses = () => [{ kind: 'application' }];
+  fs.mkdirSync(h.game.prefixPath, { recursive: true });
+  const dialogs = h.calls.openDialog.length;
+  assert.equal((await h.invoke('player:entry', h.game.id)).ok, false);
+  assert.equal(h.calls.openDialog.length, dialogs);
+});
+
+test('failed library writes roll back both compatibility choices and selected entries in memory', async (t) => {
+  const h = await harness(t);
+  const libraryPath = path.join(h.profile, 'library.json');
+  const original = fs.readFileSync(libraryPath, 'utf8');
+  fs.renameSync(libraryPath, libraryPath + '.previous'); fs.mkdirSync(libraryPath);
+  const before = (await h.state()).games[0];
+  assert.equal((await h.invoke('player:compatibility', h.game.id, { engine: 'unreal', graphics: 'd3d11' })).ok, false);
+  const alternate = path.join(h.profile, 'alternate.exe'); fs.writeFileSync(alternate, 'fixture');
+  h.behavior.showOpenDialog = async () => ({ canceled: false, filePaths: [alternate] });
+  assert.equal((await h.invoke('player:entry', h.game.id)).ok, false);
+  const after = (await h.state()).games[0];
+  assert.deepEqual(after.compatibility, before.compatibility);
+  assert.equal(after.exePath, before.exePath);
+  assert.equal(after.title, before.title);
+  assert.deepEqual(after.engineProfile, before.engineProfile);
+  assert.equal(fs.readFileSync(libraryPath + '.previous', 'utf8'), original);
 });
 
 

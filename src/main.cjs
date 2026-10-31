@@ -16,6 +16,8 @@ const { prepareEmulatedDisplay } = require('./display-environment.cjs');
 const { extractExecutableIcon } = require('./executable-icon.cjs');
 const { inspectDataDirectory, relocateAppData } = require('./data-location.cjs');
 const { scanRuntimeProcesses } = require('./runtime-processes.cjs');
+const { detectEngine } = require('./engine-profiles.cjs');
+const { compatibilityInfo, validateCompatibility, buildEngineLaunchPlan } = require('./engine-launch.cjs');
 
 const arg = (key) => process.argv.find((item) => item.startsWith(`${key}=`))?.slice(key.length + 1);
 const profileOverride = arg('--profile');
@@ -69,6 +71,29 @@ function readLibrary() {
 function writeLibrary() {
   writeJsonAtomic(libraryPath, library);
 }
+function commitGameUpdate(game, updates, removed = []) {
+  const previous = { ...game };
+  for (const key of removed) delete game[key];
+  Object.assign(game, updates);
+  try { writeLibrary(); }
+  catch (error) { for (const key of Object.keys(game)) delete game[key]; Object.assign(game, previous); throw error; }
+}
+function updateEngineProfile(game) {
+  const previous = JSON.stringify({ engine: game.engine, profile: game.engineProfile, compatibility: game.compatibility, notice: game.compatibilityNotice });
+  const profile = detectEngine(game.exePath);
+  let selected = game.compatibility;
+  // Preserve the previously verified DX11 launch choice when upgrading the old
+  // Unity-only launcher. New imports default to leaving graphics APIs alone.
+  if (!selected && profile.id === 'unity' && /^Unity.*Direct3D 11/.test(game.engine || '')) selected = { engine: 'auto', graphics: 'd3d11' };
+  if (selected?.engine === 'auto') {
+    try { validateCompatibility(selected, profile); }
+    catch { selected = { engine: 'auto', graphics: 'auto' }; game.compatibilityNotice = '引擎或版本特征已改变，原图形预设不再适用，已恢复自动适配。'; }
+  }
+  game.engineProfile = profile;
+  game.engine = profile.name;
+  if (selected !== undefined) game.compatibility = selected;
+  return previous !== JSON.stringify({ engine: game.engine, profile: game.engineProfile, compatibility: game.compatibility, notice: game.compatibilityNotice });
+}
 function libraryIcon(game) {
   if (game.kind !== 'windows' || !game.exePath) return null;
   try {
@@ -82,7 +107,7 @@ function libraryIcon(game) {
   } catch { return null; }
 }
 function publicState() {
-  return { games: library.filter((game) => !game.hidden).map((game) => ({ ...game, iconData: libraryIcon(game), running: gameWindows.has(game.id) || windowsProcesses.has(game.id) || externalRunning.has(game.id), launching: launching.has(game.id), relocating: relocating.has(game.id) })),
+  return { games: library.filter((game) => !game.hidden).map((game) => ({ ...game, ...(game.kind === 'windows' ? { compatibilityInfo: compatibilityInfo(game) } : {}), iconData: libraryIcon(game), running: gameWindows.has(game.id) || windowsProcesses.has(game.id) || externalRunning.has(game.id), launching: launching.has(game.id), relocating: relocating.has(game.id) })),
     platform: process.platform, arch: process.arch, version: app.getVersion(), wineVersion: settings.wineVersion || null,
     runtimePath: settings.wineRuntimePath || null, runtimeSource: settings.runtimeSource || null,
     runtimeCheck: settings.runtimeCheck || null, runtimeActivity, recoveryMessages,
@@ -287,7 +312,8 @@ handle('player:import', async () => {
     if (metadata.isDll) throw new Error('选择的文件是动态链接库，请选择程序本身。');
     const existing = library.find((item) => item.kind === 'windows' && (item.exePath === executable || item.sourceExePath === executable));
     if (existing) { existing.hidden = false; writeLibrary(); refresh(); return { game: existing, alreadyImported: true }; }
-    const plan = inspectImportFolder(executable, { homeDirectory: app.getPath('home'), workspaceRoot: profileRoot,
+    const detected = detectEngine(executable);
+    const plan = inspectImportFolder(executable, { sourceDirectory: detected.rootDirectory, homeDirectory: app.getPath('home'), workspaceRoot: profileRoot,
       cloudRoot: path.join(app.getPath('home'), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'AppBridge') });
     if (!plan.alreadyManaged) {
       const confirmation = await dialog.showMessageBox(libraryWindow, { type: 'question', title: '复制到 AppBridge 工作区',
@@ -303,6 +329,7 @@ handle('player:import', async () => {
     const game = { id, kind: 'windows', title: path.basename(executable), exePath: managedExecutable, sourceExePath: executable,
       engine: 'Windows', architecture: metadata.architecture || metadata.machineHex, saveDirectory,
       prefixPath: path.join(saveDirectory, 'prefix'), importedAt: new Date().toISOString(), lastPlayedAt: null };
+    updateEngineProfile(game);
     library.push(game); writeLibrary(); refresh(); return { game, alreadyImported: false };
   }
   const result = await dialog.showOpenDialog(libraryWindow, { title: '选择完整游戏文件夹', properties: ['openDirectory'] });
@@ -318,6 +345,10 @@ handle('player:launch', async (id) => {
   launching.add(id); refresh();
   try {
     if (await checkExistingWindowsProcess(game)) { watchExistingWindowsProcesses(); throw new Error('此应用已经在运行，请先查看已有窗口。'); }
+    updateEngineProfile(game);
+    const display = game.display || { mode: 'app', width: 1280, height: 720, hideDock: true };
+    const launchPlan = buildEngineLaunchPlan({ profile: game.engineProfile, compatibility: game.compatibility, display, saveDirectory: game.saveDirectory });
+    if (game.compatibilityNotice) launchPlan.warnings.push(game.compatibilityNotice);
     if (!settings.wineRuntimePath) await detectRuntime();
     const runtimePath = settings.wineRuntimePath;
     const probe = await probeRuntime(runtimePath);
@@ -346,27 +377,41 @@ handle('player:launch', async (id) => {
       prefixRecordChanged = true;
     }
     if (prefixRecordChanged) writeJsonAtomic(prefixRecordPath, prefixRecord);
-    const unity = fs.existsSync(path.join(path.dirname(game.exePath), 'UnityPlayer.dll'));
-    const display = game.display || { mode: 'app', width: 1280, height: 720, hideDock: true };
     const displayProfile = await applyGameDisplayProfile({ exePath: game.exePath, runtimePath, prefixPath: game.prefixPath, saveDirectory: game.saveDirectory, display, runCommand: runRuntimeCommand });
     if (displayProfile.applied) log(`Display profile ${id}: ${JSON.stringify(displayProfile)}`);
-    const launchArguments = unity ? ['-force-d3d11', '-logFile', path.join(game.saveDirectory, 'unity-player.log')] : [];
-    if (unity && display.mode !== 'app') {
-      launchArguments.push('-screen-fullscreen', display.mode === 'fullscreen' ? '1' : '0', '-screen-width', String(display.width), '-screen-height', String(display.height));
-      if (display.mode === 'fullscreen') launchArguments.push('-window-mode', 'borderless');
-    }
+    const launchArguments = launchPlan.arguments;
     const displayHelperPath = path.join(process.resourcesPath, 'runtime', 'display-helper.dylib');
     const runtimeLog = path.join(game.saveDirectory, 'runtime.log');
+    if (launchPlan.logFiles.length) {
+      let zDrive;
+      try { zDrive = fs.realpathSync(path.join(game.prefixPath, 'dosdevices', 'z:')); } catch {}
+      if (zDrive !== '/') throw new Error('运行目录缺少标准 Z: 文件映射，无法把引擎日志放入应用数据目录。请检查运行目录后重试。');
+    }
+    for (const file of launchPlan.logFiles) {
+      try {
+        const stat = fs.lstatSync(file.path);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('引擎日志位置不是普通文件，请先在数据与存档中检查：' + file.path);
+        if (stat.size > 4 * 1024 * 1024) fs.renameSync(file.path, `${file.path}.${Date.now()}.bak`);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    const launchId = crypto.randomUUID();
+    const reportPath = path.join(game.saveDirectory, 'launch-plan.json');
+    const launchReport = { ...launchPlan, id: launchId, startedAt: new Date().toISOString(), executable: game.exePath, architecture: game.architecture,
+      detectedEngine: game.engineProfile, runtime: { path: runtimePath, version: probe.version || probe.stdout.trim(), source: settings.runtimeSource }, display };
+    writeJsonAtomic(reportPath, launchReport);
+    game.lastLaunch = { id: launchId, startedAt: launchReport.startedAt, reportPath, engine: launchPlan.engine.name, verification: launchPlan.verification };
     if (fs.existsSync(runtimeLog) && fs.statSync(runtimeLog).size > 4 * 1024 * 1024) fs.renameSync(runtimeLog, `${runtimeLog}.${Date.now()}.bak`);
     fs.appendFileSync(runtimeLog, `\n${new Date().toISOString()} Launch ${game.title}; ${probe.stdout.trim()}; ${JSON.stringify(launchArguments)}\n`);
     const child = launchWindowsExecutable({ runtimePath, exePath: game.exePath,
       prefixPath: game.prefixPath, workingDirectory: path.dirname(game.exePath), launchArguments,
-      ...(settings.runtimeSource === 'bundled' && fs.existsSync(displayHelperPath) ? { displayHelperPath, displayOptions: { ...display, mode: unity && display.mode === 'fullscreen' ? 'app' : display.mode } } : {}),
+      ...(settings.runtimeSource === 'bundled' && fs.existsSync(displayHelperPath) ? { displayHelperPath, displayOptions: { ...display, mode: launchPlan.displayHelperMode } } : {}),
       onOutput: (output) => { fs.appendFileSync(runtimeLog, `[${output.stream}] ${output.text}`); },
-      onExit: (details) => { windowsProcesses.delete(id); game.lastExit = { ...details, at: new Date().toISOString() }; writeLibrary(); log(`Windows process ${id}: ${JSON.stringify(details)}`); refresh(); },
+      onExit: (details) => { windowsProcesses.delete(id); game.lastExit = { ...details, at: new Date().toISOString() };
+        if (game.lastLaunch?.id === launchId) writeJsonAtomic(reportPath, { ...launchReport, finishedAt: game.lastExit.at, exit: details });
+        writeLibrary(); log(`Windows process ${id}: ${JSON.stringify(details)}`); refresh(); },
     });
     windowsProcesses.set(id, child);
-    game.engine = unity ? 'Unity · Direct3D 11' : 'Windows';
+    game.engine = launchPlan.engine.name;
     game.lastPlayedAt = new Date().toISOString(); writeLibrary(); refresh(); return true;
   } finally { launching.delete(id); refresh(); }
 });
@@ -401,14 +446,34 @@ handle('player:runtime', async () => {
 handle('player:entry', async (id) => {
   const game = getGame(id);
   if (game.kind !== 'windows') throw new Error('此操作只适用于 Windows 程序。');
-  if (windowsProcesses.has(id) || launching.has(id) || relocating.has(id)) throw new Error('请先关闭此应用并等待文件操作完成。');
+  const busy = () => windowsProcesses.has(id) || launching.has(id) || relocating.has(id);
+  if (busy()) throw new Error('请先关闭此应用并等待文件操作完成。');
+  if (await checkExistingWindowsProcess(game)) { watchExistingWindowsProcesses(); throw new Error('此应用仍在运行，请关闭后再更改启动程序。'); }
+  if (busy()) throw new Error('应用正在启动或整理数据，请完成后再更改启动程序。');
   const result = await dialog.showOpenDialog(libraryWindow, { title: '选择安装后的程序入口',
     defaultPath: game.prefixPath, properties: ['openFile'], filters: [{ name: 'Windows executable', extensions: ['exe'] }] });
   if (result.canceled) return false;
+  if (busy()) throw new Error('应用正在启动或整理数据，请完成后再更改启动程序。');
+  if (await checkExistingWindowsProcess(game)) { watchExistingWindowsProcesses(); throw new Error('此应用仍在运行，请关闭后再更改启动程序。'); }
+  if (busy()) throw new Error('应用正在启动或整理数据，请完成后再更改启动程序。');
   const metadata = inspectWindowsExecutable(result.filePaths[0]);
   if (metadata.isDll) throw new Error('选择的文件是动态链接库，请选择程序本身。');
-  game.exePath = result.filePaths[0]; game.title = path.basename(game.exePath); game.architecture = metadata.architecture || metadata.machineHex;
-  writeLibrary(); refresh(); return true;
+  const candidate = { ...game, exePath: result.filePaths[0], title: path.basename(result.filePaths[0]), architecture: metadata.architecture || metadata.machineHex };
+  updateEngineProfile(candidate);
+  commitGameUpdate(game, candidate);
+  refresh(); return true;
+});
+handle('player:compatibility', async (id, options) => {
+  const game = getGame(id);
+  if (game.kind !== 'windows') throw new Error('兼容设置适用于 Windows 应用。');
+  const busy = () => windowsProcesses.has(id) || launching.has(id) || relocating.has(id);
+  if (busy()) throw new Error('请先关闭此应用并等待文件操作完成，再修改兼容设置。');
+  if (await checkExistingWindowsProcess(game)) { watchExistingWindowsProcesses(); throw new Error('此应用仍在运行，请关闭后再修改兼容设置。'); }
+  if (busy()) throw new Error('应用正在启动或整理数据，请完成后再修改兼容设置。');
+  const profile = detectEngine(game.exePath);
+  const selected = validateCompatibility(options, profile);
+  commitGameUpdate(game, { engineProfile: profile, engine: profile.name, compatibility: selected }, ['compatibilityNotice']);
+  refresh(); return selected;
 });
 handle('player:display', async (id, options) => {
   const game = getGame(id);
@@ -497,7 +562,9 @@ handle('player:export-log', async () => {
   const result = await dialog.showSaveDialog(libraryWindow, { title: '导出诊断日志', defaultPath: path.join(workspace.exportsRoot, 'AppBridge-diagnostics.json') });
   if (result.canceled) return false;
   const tail = (file) => { try { const fd = fs.openSync(file, 'r'); try { const size = fs.fstatSync(fd).size; const data = Buffer.alloc(Math.min(size, 128 * 1024)); fs.readSync(fd, data, 0, data.length, size - data.length); return data.toString('utf8'); } finally { fs.closeSync(fd); } } catch { return null; } };
-  writeJsonAtomic(result.filePath, { exportedAt: new Date().toISOString(), state: publicState(), playerLog: tail(logPath), apps: library.filter((g) => g.kind === 'windows' && !g.hidden).map((g) => ({ id: g.id, title: g.title, runtimeLog: tail(path.join(g.saveDirectory, 'runtime.log')), unityLog: tail(path.join(g.saveDirectory, 'unity-player.log')) })) }); return true;
+  writeJsonAtomic(result.filePath, { exportedAt: new Date().toISOString(), state: publicState(), playerLog: tail(logPath), apps: library.filter((g) => g.kind === 'windows' && !g.hidden).map((g) => ({ id: g.id, title: g.title,
+    runtimeLog: tail(path.join(g.saveDirectory, 'runtime.log')), unityLog: tail(path.join(g.saveDirectory, 'unity-player.log')),
+    unrealLog: tail(path.join(g.saveDirectory, 'unreal-player.log')), godotLog: tail(path.join(g.saveDirectory, 'godot-player.log')), launchPlan: tail(path.join(g.saveDirectory, 'launch-plan.json')) })) }); return true;
 });
 
 function createLibrary() {
@@ -562,6 +629,12 @@ app.whenReady().then(async () => {
   log(`AppBridge ${app.getVersion()}; ${process.platform}/${process.arch}; Electron ${process.versions.electron}; OS=${os.release()}; CPU=${os.cpus()[0]?.model || 'unavailable'}`);
   recordMacEnvironment();
   library = readLibrary();
+  let engineProfilesChanged = false;
+  for (const game of library.filter((item) => item.kind === 'windows' && !item.hidden)) {
+    try { engineProfilesChanged = updateEngineProfile(game) || engineProfilesChanged; }
+    catch (error) { log(`Engine identification ${game.id}: ${error.message}`); }
+  }
+  if (engineProfilesChanged) writeLibrary();
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'AppBridge', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit', label: '退出' }] },
     { label: '编辑', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

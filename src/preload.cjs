@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('player', {
   testRuntime: () => ipcRenderer.invoke('player:test-runtime'),
   entry: (id) => ipcRenderer.invoke('player:entry', id),
   display: (id, options) => ipcRenderer.invoke('player:display', id, options),
+  compatibility: (id, options) => ipcRenderer.invoke('player:compatibility', id, options),
   workspace: (section = 'root') => ipcRenderer.invoke('player:workspace', section),
   onChange: (callback) => ipcRenderer.on('player:changed', (_event, state) => callback(state)),
 });

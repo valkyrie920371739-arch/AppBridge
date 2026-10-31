@@ -128,7 +128,7 @@ function statusFor(game) {
   if (game.lastExit && !game.lastExit.ok) return { text: '上次启动异常', className: 'failed' };
   return state.wineVersion ? { text: '可启动', className: 'ready' } : { text: '需要运行环境', className: 'needs' };
 }
-function typeFor(game) { return game.kind === 'windows' ? (game.engine?.includes('Unity') ? 'Unity · Direct3D 11' : 'Windows 程序') + ' · ' + game.architecture : 'TyranoScript · 原生加载'; }
+function typeFor(game) { return game.kind === 'windows' ? (game.compatibilityInfo?.engineName || game.engineProfile?.name || 'Windows 程序') + ' · ' + game.architecture : 'TyranoScript · 原生加载'; }
 function displayName(game) { return String(game.title || '未命名应用').replace(/\.exe$/i, ''); }
 function appIcon(game) {
   const node = element('span', 'app-icon'); node.setAttribute('aria-hidden', 'true');
@@ -161,6 +161,7 @@ async function launch(game) {
   finally { pending.delete(game.id); renderLibrary(); }
 }
 function showData(game) { window.AppDataPanel.open(game, { request, getState: () => state, onState: (value) => { state = value; render(); }, message, showDialog }); }
+function showCompatibility(game) { window.AppCompatibilityPanel.open(game, { request, getState: () => state, onState: (value) => { state = value; render(); }, isPending: (id) => pending.has(id), message, showDialog }); }
 function displayOptions(game) {
   const value = game.display || {};
   return {
@@ -229,6 +230,7 @@ function toggleMenu(game, trigger, card) {
   const item = (text, name, action, danger = false) => { const node = button(text, 'menu-item' + (danger ? ' danger' : ''), name, () => { closeMenu(); action(); }); node.setAttribute('role', 'menuitem'); menu.append(node); };
   item('应用信息', 'CircleHelp', () => showDetails(game));
   if (game.kind === 'windows') item('显示设置', 'AppWindow', () => showDisplaySettings(game));
+  if (game.kind === 'windows') item('兼容设置', 'Settings', () => showCompatibility(game));
   item(game.kind === 'windows' ? '数据与运行日志' : '打开存档目录', 'FolderOpen', () => showData(game));
   if (game.kind === 'windows') item('更改启动程序', 'FileCode', () => changeEntry(game));
   menu.append(element('div', 'menu-separator')); item('移出资料库', 'Trash2', () => remove(game), true);
@@ -286,11 +288,12 @@ function renderInspector(game) {
   const actions = element('div', 'inspector-actions');
   const action = (text, name, callback) => { const node = button(text, 'inspector-action', name, callback); node.append(icon('ChevronRight')); return node; };
   if (game.kind === 'windows') actions.append(action('显示设置', 'AppWindow', () => showDisplaySettings(game)));
+  if (game.kind === 'windows') actions.append(action('兼容设置', 'Settings', () => showCompatibility(game)));
   actions.append(action(game.kind === 'windows' ? '数据与存档' : '存档目录', 'FolderOpen', () => showData(game)), action('应用信息', 'CircleHelp', () => showDetails(game)));
   const metadata = element('dl', 'inspector-meta');
   const field = (label, value) => { const row = element('div'); row.append(element('dt', '', label), element('dd', '', value)); metadata.append(row); };
   field('最近打开', game.lastPlayedAt ? formatTime(game.lastPlayedAt) : '尚未打开');
-  if (game.kind === 'windows') { const display = displayOptions(game); field('启动画面', display.mode === 'app' ? '跟随游戏' : (display.mode === 'fullscreen' ? '全屏' : '窗口') + ' ' + display.width + ' × ' + display.height); }
+  if (game.kind === 'windows') { const display = displayOptions(game); field('启动画面', display.mode === 'app' ? '跟随游戏' : (display.mode === 'fullscreen' ? '全屏' : '窗口') + ' ' + display.width + ' × ' + display.height); field('程序引擎', game.compatibilityInfo?.engineName || game.engineProfile?.name || '尚未识别'); }
   const location = game.exePath || game.archivePath || '';
   field('程序位置', location.includes('com~apple~CloudDocs') ? 'iCloud 云盘' : location.includes('AppBridge') ? 'AppBridge 工作区' : '本机文件夹');
   root.append(top, identity, play, actions, metadata, element('p', 'inspector-note', game.kind === 'windows' ? '应用生成的文件，可在“数据与存档”中查看。' : '游戏进度可在“存档目录”中查看。'));
@@ -303,7 +306,10 @@ function showDetails(game) {
   const fields = element('dl', 'detail-data'); const field = (label, value, isPath = false) => { if (!value) return; const group = element('div', 'detail-field'); group.append(element('dt', '', label), element('dd', isPath ? 'detail-path' : '', value)); fields.append(group); };
   field('启动方式', game.kind === 'windows' ? 'Wine 兼容运行' : 'TyranoScript 原生加载'); field('程序位置', game.kind === 'windows' ? game.exePath : game.archivePath, true); field('数据目录', game.saveDirectory, true);
   if (game.kind === 'windows') {
-    field('运行引擎', game.engine);
+    field('识别引擎', game.engineProfile?.id === 'unknown' ? '尚未可靠识别' : game.engineProfile?.name || game.compatibilityInfo?.detectedEngineName || game.engine || '尚未识别');
+    if (game.compatibility?.engine && game.compatibility.engine !== 'auto') field('手动适配', game.compatibilityInfo?.engineName || game.compatibility.engine);
+    field('图形模式', { auto: '自动', game: '跟随程序', d3d11: 'Direct3D 11', opengl: 'OpenGL 兼容模式' }[game.compatibility?.graphics || 'auto'] || '自动');
+    field('本轮引擎适配', '待实际程序验证');
     const display = displayOptions(game);
     field('显示设置', (display.mode === 'app' ? '跟随游戏' : (display.mode === 'fullscreen' ? '全屏' : '窗口') + ' · ' + display.width + ' × ' + display.height) + (display.hideDock ? ' · 游戏运行时隐藏 Dock' : ''));
     if (game.lastExit) {
@@ -319,9 +325,10 @@ function showDetails(game) {
   play.disabled = opening || Boolean(game.kind === 'windows' && (game.running || state.runtimeActivity || runtimePending));
   footer.append(button(game.kind === 'windows' ? '数据与日志' : '存档目录', 'button secondary', 'FolderOpen', () => showData(game)));
   if (game.kind === 'windows') footer.append(button('显示设置', 'button secondary', 'AppWindow', () => showDisplaySettings(game)));
+  if (game.kind === 'windows') footer.append(button('兼容设置', 'button secondary', 'Settings', () => showCompatibility(game)));
   footer.append(play);
   root.append(header, identity, pill(game), fields);
-  if (game.kind === 'windows') root.append(element('p', 'detail-note', '启动异常时，打开“数据与日志”查看 runtime.log。Unity 应用另有 unity-player.log，也可在运行环境中导出诊断日志。'));
+  if (game.kind === 'windows') root.append(element('p', 'detail-note', '启动异常时，可先在“兼容设置”中尝试其他图形模式。运行记录和引擎日志集中在“数据与日志”中，也可在“运行环境”中导出诊断日志。'));
   root.append(footer); showDialog('details-dialog');
 }
 function filteredApps() {
@@ -351,6 +358,7 @@ function render() {
   $('version').textContent = 'AppBridge · ' + state.version; $('search-shortcut').textContent = state.platform === 'darwin' ? '⌘ F' : 'Ctrl F'; updateEnvironment(); renderLibrary(); updateBusy(); updateWorkspace();
   updateDisplayBusy();
   window.AppDataPanel.refresh();
+  window.AppCompatibilityPanel.refresh();
   const recovered = (state.recoveryMessages || []).filter((text) => typeof text === 'string' && !shownRecoveryMessages.has(text));
   if (recovered.length) { recovered.forEach((text) => shownRecoveryMessages.add(text)); message(recovered.join('\n'), true); }
 }

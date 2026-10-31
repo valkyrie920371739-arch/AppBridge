@@ -148,3 +148,98 @@ test('failed copying cleans only its own staging directory and leaves source and
   assert.equal(fs.readFileSync(path.join(f.save, 'runtime.log'), 'utf8'), 'existing log');
   assert.deepEqual(snapshot(f.source), before);
 });
+
+test('an explicit package root copies Unreal resources above a nested shipping entry and preserves its relative path', (t) => {
+  const f = fixture(t);
+  const binaries = path.join(f.source, 'Project', 'Binaries', 'Win64');
+  const paks = path.join(f.source, 'Project', 'Content', 'Paks');
+  fs.mkdirSync(binaries, { recursive: true }); fs.mkdirSync(paks, { recursive: true });
+  const exe = path.join(binaries, 'Project-Win64-Shipping.exe');
+  fs.writeFileSync(exe, 'nested executable');
+  fs.writeFileSync(path.join(paks, 'Project-Windows.pak'), 'game resources');
+  fs.mkdirSync(path.join(f.source, 'Engine', 'Binaries', 'ThirdParty'), { recursive: true });
+  fs.writeFileSync(path.join(f.source, 'Engine', 'Binaries', 'ThirdParty', 'runtime.dll'), 'runtime dependency');
+  const before = snapshot(f.source);
+  const plan = inspectImportFolder(exe, { ...f.options, sourceDirectory: f.source });
+  assert.equal(plan.sourceDirectory, f.source);
+  assert.equal(plan.exeRelativePath, path.join('Project', 'Binaries', 'Win64', 'Project-Win64-Shipping.exe'));
+  assert.equal(plan.exeName, 'Project-Win64-Shipping.exe');
+  const copied = copyImportFolder(plan, f.save);
+  assert.equal(copied, path.join(f.save, 'program', plan.exeRelativePath));
+  assert.equal(fs.readFileSync(copied, 'utf8'), 'nested executable');
+  assert.deepEqual(snapshot(path.join(f.save, 'program')), before);
+  assert.deepEqual(snapshot(f.source), before);
+});
+
+test('omitting an explicit source root keeps the EXE parent as the complete import scope', (t) => {
+  const f = fixture(t);
+  const nested = path.join(f.source, 'nested'); fs.mkdirSync(nested);
+  const exe = path.join(nested, 'Nested.exe'); fs.writeFileSync(exe, 'nested executable');
+  const plan = inspectImportFolder(exe, f.options);
+  assert.equal(plan.sourceDirectory, nested);
+  assert.equal(plan.exeRelativePath, 'Nested.exe');
+  assert.equal(copyImportFolder(plan, f.save), path.join(f.save, 'program', 'Nested.exe'));
+  assert.deepEqual(fs.readdirSync(path.join(f.save, 'program')), ['Nested.exe']);
+});
+
+test('explicit roots must contain the entry and cannot select a home folder, filesystem root or mounted volume root', (t) => {
+  const f = fixture(t);
+  assert.throws(() => inspectImportFolder(f.exe, { ...f.options, sourceDirectory: f.options.cloudRoot }), /入口必须位于/);
+  assert.throws(() => inspectImportFolder(f.exe, { ...f.options, sourceDirectory: path.parse(f.source).root }), /范围太大/);
+  const nested = path.join(f.options.homeDirectory, 'nested'); fs.mkdirSync(nested);
+  const homeExe = path.join(nested, 'Game.exe'); fs.writeFileSync(homeExe, 'home game');
+  assert.throws(() => inspectImportFolder(homeExe, { ...f.options, sourceDirectory: f.options.homeDirectory }), /范围太大/);
+  assert.throws(() => inspectImportFolder(f.exe, { ...f.options, sourceDirectory: 'relative-folder' }), /绝对路径/);
+  const originalStat = fs.statSync;
+  const parent = path.dirname(f.source);
+  const mock = t.mock.method(fs, 'statSync', (file, ...args) => {
+    const stat = originalStat(file, ...args);
+    return file === parent ? { ...stat, dev: stat.dev + 1 } : stat;
+  });
+  assert.throws(() => inspectImportFolder(f.exe, { ...f.options, sourceDirectory: f.source }), /范围太大/);
+  mock.mock.restore();
+  assert.equal(fs.existsSync(f.save), false);
+});
+
+test('explicit roots reject links at the root, in its ancestors, and between the root and entry', (t) => {
+  const f = fixture(t);
+  const linkedRoot = path.join(f.root, 'linked-game'); fs.symlinkSync(f.source, linkedRoot, 'dir');
+  assert.throws(() => inspectImportFolder(path.join(linkedRoot, 'Launch.exe'), { ...f.options, sourceDirectory: linkedRoot }), /符号链接/);
+  const nested = path.join(f.source, 'nested'); fs.mkdirSync(nested);
+  const exe = path.join(nested, 'Game.exe'); fs.writeFileSync(exe, 'nested game');
+  assert.throws(() => inspectImportFolder(path.join(linkedRoot, 'nested', 'Game.exe'), { ...f.options, sourceDirectory: path.join(linkedRoot, 'nested') }), /符号链接/);
+  const insideLink = path.join(f.source, 'Binaries'); fs.symlinkSync(nested, insideLink, 'dir');
+  assert.throws(() => inspectImportFolder(path.join(insideLink, 'Game.exe'), { ...f.options, sourceDirectory: f.source }), /符号链接/);
+  // Managed entries skip resource enumeration, so entry-path checks must run
+  // before the already-managed return as well.
+  const managed = path.join(f.options.cloudRoot, 'managed'); fs.mkdirSync(managed);
+  fs.symlinkSync(nested, path.join(managed, 'Binaries'), 'dir');
+  assert.throws(() => inspectImportFolder(path.join(managed, 'Binaries', 'Game.exe'), { ...f.options, sourceDirectory: managed }), /符号链接/);
+  assert.equal(fs.existsSync(f.save), false);
+});
+
+test('confirmed explicit roots and relative entries cannot change before copying', (t) => {
+  const f = fixture(t);
+  const nested = path.join(f.source, 'Binaries'); fs.mkdirSync(nested);
+  const first = path.join(nested, 'First.exe'); fs.writeFileSync(first, 'first entry');
+  const second = path.join(nested, 'Second.exe'); fs.writeFileSync(second, 'second entry');
+  const plan = inspectImportFolder(first, { ...f.options, sourceDirectory: f.source });
+  for (const changed of [
+    { ...plan, exePath: second },
+    { ...plan, exeRelativePath: '../First.exe' },
+    { ...plan, sourceDirectory: nested },
+  ]) assert.throws(() => copyImportFolder(changed, f.save), /来源或 AppBridge 工作区位置发生了变化/);
+  assert.equal(fs.existsSync(f.save), false);
+});
+
+test('an existing managed nested entry is reused with its explicit package root', (t) => {
+  const f = fixture(t);
+  const sourceDirectory = path.join(f.options.cloudRoot, 'managed-game');
+  const binaries = path.join(sourceDirectory, 'Project', 'Binaries', 'Win64'); fs.mkdirSync(binaries, { recursive: true });
+  const exe = path.join(binaries, 'Game.exe'); fs.writeFileSync(exe, 'existing entry');
+  const plan = inspectImportFolder(exe, { ...f.options, sourceDirectory });
+  assert.equal(plan.alreadyManaged, true);
+  assert.equal(plan.exeRelativePath, path.join('Project', 'Binaries', 'Win64', 'Game.exe'));
+  assert.equal(copyImportFolder(plan, f.save), exe);
+  assert.equal(fs.existsSync(f.save), false);
+});

@@ -257,6 +257,9 @@ h1, h2, h3, p { margin: 0; }
 .display-fields:disabled input, .display-fields:disabled select, .display-fields:disabled .display-checkbox { cursor: default; }
 .display-locked { color: var(--amber); background: var(--amber-fill); border: 1px solid var(--line); border-radius: 7px; padding: 11px 13px; font-size: 12px; line-height: 1.8; margin-bottom: 18px; }
 .display-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; }
+.compatibility-detected { color: var(--secondary); font-size: 12px; line-height: 1.8; margin-top: 14px; overflow-wrap: anywhere; }
+.compatibility-error { color: var(--danger); font-size: 12px; line-height: 1.8; margin-bottom: 18px; overflow-wrap: anywhere; }
+.compatibility-error:focus { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 3px; }
 .workspace-root-card { background: var(--subtle); border-radius: 10px; padding: 17px; margin-top: 21px; min-width: 0; }
 .workspace-root-card h3 { font-size: 13px; font-weight: 600; }
 .workspace-folder-path { color: var(--secondary); margin: 8px 0 15px; }

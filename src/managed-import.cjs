@@ -68,7 +68,7 @@ function enumerate(directory) {
   return { entries, files, sizeBytes, fingerprint };
 }
 
-function inspectImportFolder(exePath, { homeDirectory, workspaceRoot, cloudRoot } = {}) {
+function inspectImportFolder(exePath, { homeDirectory, workspaceRoot, cloudRoot, sourceDirectory: requestedSourceDirectory } = {}) {
   const executable = absolutePath(exePath, '程序入口');
   const roots = {
     homeDirectory: resolvedLocation(absolutePath(homeDirectory, '用户目录')),
@@ -81,9 +81,14 @@ function inspectImportFolder(exePath, { homeDirectory, workspaceRoot, cloudRoot 
     if (stat && !stat.isDirectory()) throw new Error(`工作区配置不是文件夹：${root}`);
   }
   readableFile(executable);
-  const sourceDirectory = path.dirname(executable);
+  const sourceDirectory = requestedSourceDirectory === undefined
+    ? path.dirname(executable)
+    : absolutePath(requestedSourceDirectory, '程序来源目录');
   const sourceStat = ordinaryDirectory(sourceDirectory, '程序所在目录');
   const sourceRealPath = fs.realpathSync(sourceDirectory);
+  if (requestedSourceDirectory !== undefined && sourceRealPath !== sourceDirectory) {
+    throw new Error('指定的程序来源目录不能通过符号链接指向其他位置。');
+  }
   const sourceParent = path.dirname(sourceRealPath);
   const isFilesystemRoot = sourceRealPath === path.parse(sourceRealPath).root;
   const isMountRoot = sourceParent !== sourceRealPath && fs.statSync(sourceParent).dev !== sourceStat.dev;
@@ -91,7 +96,18 @@ function inspectImportFolder(exePath, { homeDirectory, workspaceRoot, cloudRoot 
   if (isFilesystemRoot || isMountRoot || broadSources.includes(sourceRealPath)) {
     throw new Error('程序所在目录范围太大。请先把程序和全部配套文件放入独立文件夹，再添加其中的 EXE。');
   }
-  const plan = { exePath: executable, exeName: path.basename(executable), sourceDirectory, sourceRealPath, ...roots };
+  if (!within(sourceDirectory, executable, false)) throw new Error('程序入口必须位于指定的程序来源目录内。');
+  const exeRelativePath = path.relative(sourceDirectory, executable);
+  // An engine may identify the package root above Binaries/Win64. Every
+  // directory between that root and the selected entry must remain ordinary;
+  // a linked child must never widen the package scope or escape its root.
+  let entryDirectory = sourceDirectory;
+  for (const name of exeRelativePath.split(path.sep).slice(0, -1)) {
+    entryDirectory = path.join(entryDirectory, name);
+    ordinaryDirectory(entryDirectory, '程序入口所在目录');
+  }
+  if (!within(sourceRealPath, fs.realpathSync(executable), false)) throw new Error('程序入口通过链接指向程序来源目录之外。');
+  const plan = { exePath: executable, exeName: path.basename(executable), exeRelativePath, sourceDirectory, sourceRealPath, ...roots };
   if (within(roots.workspaceRoot, sourceRealPath) || within(roots.cloudRoot, sourceRealPath)) {
     return { ...plan, alreadyManaged: true };
   }
@@ -105,7 +121,9 @@ function inspectImportFolder(exePath, { homeDirectory, workspaceRoot, cloudRoot 
 function copyImportFolder(plan, saveDirectory) {
   if (!plan || typeof plan !== 'object') throw new Error('导入计划无效，请重新选择程序。');
   const current = inspectImportFolder(plan.exePath, plan);
-  if (current.sourceRealPath !== plan.sourceRealPath || ['homeDirectory', 'workspaceRoot', 'cloudRoot'].some((key) => current[key] !== plan[key])) {
+  if (current.sourceDirectory !== plan.sourceDirectory || current.sourceRealPath !== plan.sourceRealPath ||
+      current.exeRelativePath !== plan.exeRelativePath || current.exeName !== plan.exeName ||
+      ['homeDirectory', 'workspaceRoot', 'cloudRoot'].some((key) => current[key] !== plan[key])) {
     throw new Error('程序来源或 AppBridge 工作区位置发生了变化，请重新添加。');
   }
   if (current.alreadyManaged && plan.alreadyManaged === true) return current.exePath;
@@ -176,7 +194,7 @@ function copyImportFolder(plan, saveDirectory) {
     if (statOrNull(destination)) throw new Error('应用运行文件夹已出现其他内容，已停止以避免覆盖。');
     fs.renameSync(stage, destination);
     promoted = true;
-    return path.join(destination, current.exeName);
+    return path.join(destination, current.exeRelativePath);
   } finally {
     if (!promoted) fs.rmSync(stage, { recursive: true, force: true });
   }
